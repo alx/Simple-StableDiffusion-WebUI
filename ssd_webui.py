@@ -121,8 +121,8 @@ PAGE_SHELL = """<!DOCTYPE html>
   header h1 {{ font-size:1.1rem; margin:0; }}
   header nav a {{ color:#9db4ff; text-decoration:none; margin-left:1rem; font-size:.9rem; }}
   header nav a.active {{ color:#fff; font-weight:600; border-bottom:2px solid #4c6fff; padding-bottom:2px; }}
-  main {{ max-width: 1100px; margin: 0 auto; padding: 1.5rem; display:grid; grid-template-columns: 380px 1fr; gap: 1.5rem; }}
-  main:has(.gallery) {{ display: block;  }}
+  main {{ max-width: 1200px; margin: 0 auto; padding: 1.5rem; display:grid; grid-template-columns: 380px 1fr; gap: 1.5rem; align-items: start; }}
+  main:has(> .gallery) {{ display: block; }}
   @media (max-width: 850px) {{ main {{ grid-template-columns: 1fr; }} }}
   fieldset {{ border:1px solid #2a2e38; border-radius:8px; padding: 1rem; margin-bottom:1rem; }}
   legend {{ padding:0 .4rem; color:#9db4ff; font-size:.85rem; }}
@@ -134,9 +134,10 @@ PAGE_SHELL = """<!DOCTYPE html>
   .row > div {{ flex:1; }}
   button {{ background:#4c6fff; color:white; border:none; padding:.7rem 1rem; border-radius:6px; font-size:.95rem; cursor:pointer; width:100%; margin-top:.8rem; }}
   button:hover {{ background:#3a5ae8; }}
-  .result {{ min-height: 200px; }}
-  .gallery {{ grid-column: 1 / -1; display:grid; grid-template-columns: repeat(auto-fill, minmax(180px,1fr)); gap: .8rem; }}
+  .result {{ min-height: 200px; position: sticky; top: 1.5rem; }}
+  .gallery {{ display:grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap: 1rem; }}
   .gallery img, .result img {{ width:100%; border-radius:8px 8px 0 0; border:1px solid #2a2e38; border-bottom:none; display:block; }}
+  main > .gallery {{ grid-column: 1 / -1; }}
   .card {{ background:#181b22; border:1px solid #2a2e38; border-radius:8px; overflow:hidden; }}
   .card .card-body {{ padding:.6rem; }}
   .card small {{ display:block; color:#8a90a0; margin-top:.2rem; word-break: break-word; }}
@@ -154,7 +155,7 @@ PAGE_SHELL = """<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>SSD WebUI &mdash; {sd_url}</h1>
+  <h1>Simple Stable Diffusion WebUI &mdash; {sd_url}</h1>
   <nav>
     <a href="/" class="{active_txt2img}">Text2Image</a>
     <a href="/img2img" class="{active_img2img}">Image2Image</a>

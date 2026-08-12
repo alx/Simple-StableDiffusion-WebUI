@@ -1,4 +1,4 @@
-# SSD WebUI (Simple Stable Diffusion WebUI)
+# Simple Stable Diffusion WebUI (ssd_webui)
 
 Une interface web minimale pour piloter un serveur
 [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)
@@ -8,6 +8,10 @@ configuration se fait via des options en ligne de commande.
 
 L'application communique avec le serveur sd.cpp via son API compatible
 (`/sdapi/v1/txt2img` et `/sdapi/v1/img2img`).
+
+## Screenshot 
+
+![Interface Simple Stable Diffusion WebUI](ssd_webui.png)
 
 ## Fonctionnalités
 

@@ -1,4 +1,4 @@
-# SSD WebUI (Simple Stable Diffusion WebUI)
+# Simple Stable Diffusion WebUI (ssd_webui)
 
 A minimal web interface for driving a [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)
 server (`sd-server` mode). Single-file Python script, **zero external dependency**
@@ -7,6 +7,10 @@ options.
 
 It talks to the sd.cpp server through its compatible API
 (`/sdapi/v1/txt2img` and `/sdapi/v1/img2img`).
+
+## Screenshot 
+
+![Interface Simple Stable Diffusion WebUI](ssd_webui.png)
 
 ## Features
 
