@@ -1,0 +1,14 @@
+[Unit]
+Description=SSD WebUI - Simple Stable Diffusion WebUI
+After=network.target
+
+[Service]
+Type=simple
+User=ssd-webui
+WorkingDirectory=/opt/ssd-webui
+ExecStart=/usr/bin/python3 /opt/ssd-webui/ssd_webui.py --sd-url http://127.0.0.1:8082 --host 0.0.0.0 --port 8083 --disable-save
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
