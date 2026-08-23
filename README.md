@@ -2,7 +2,7 @@
 
 **Read this in other languages:**
 
-[English 🇺🇸](https://github.com/aaaaadrien/Simple-StableDiffusion-WebUI/blon/main/README.md) - [Français 🇫🇷](https://github.com/aaaaadrien/Simple-StableDiffusion-WebUI/blon/main/README.fr.md)
+[English 🇺🇸](https://github.com/aaaaadrien/Simple-StableDiffusion-WebUI/blob/main/README.md) - [Français 🇫🇷](https://github.com/aaaaadrien/Simple-StableDiffusion-WebUI/blob/main/README.fr.md)
 
 ---
 
