@@ -1,5 +1,11 @@
 # Simple Stable Diffusion WebUI (ssd_webui)
 
+**Read this in other languages:**
+
+[English 🇺🇸](https://github.com/aaaaadrien/Simple-StableDiffusion-WebUI/blon/main/README.md) - [Français 🇫🇷](https://github.com/aaaaadrien/Simple-StableDiffusion-WebUI/blon/main/README.fr.md)
+
+---
+
 A minimal web interface for driving a [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)
 server (`sd-server` mode). Single-file Python script, **zero external dependency**
 (standard library only, Python 3.9+), all configuration done through command-line
