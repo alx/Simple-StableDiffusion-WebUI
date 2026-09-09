@@ -220,18 +220,74 @@ SHARED_SCRIPT = """
 function renderResult(container, htmlText) {
   container.innerHTML = htmlText;
 }
+
+// Streams the generation response: the server sends one NDJSON line per
+// event (one per finished image, plus a final "done" summary), so each
+// image can be displayed as soon as it is ready instead of waiting for
+// the whole batch to complete.
 async function submitGeneration(form, resultEl, endpoint, extraFields) {
-  resultEl.innerHTML = '<div class="spinner">Generating&hellip; (may take a while depending on steps/size)</div>';
+  resultEl.innerHTML =
+    '<div class="spinner">Generating&hellip; (may take a while depending on steps/size)</div>' +
+    '<div class="gallery" id="liveGallery"></div>';
+  const spinnerEl = resultEl.querySelector('.spinner');
+  const galleryEl = resultEl.querySelector('#liveGallery');
+
   const data = Object.fromEntries(new FormData(form).entries());
   Object.assign(data, extraFields || {});
+
+  const handleEvent = (evt) => {
+    if (evt.type === 'image') {
+      galleryEl.insertAdjacentHTML('beforeend', evt.html);
+      if (spinnerEl) {
+        spinnerEl.textContent = 'Generating\\u2026 (' + evt.index + '/' + evt.total + ')';
+      }
+    } else if (evt.type === 'error') {
+      resultEl.insertAdjacentHTML('afterbegin', evt.html);
+      if (spinnerEl) spinnerEl.remove();
+    } else if (evt.type === 'done') {
+      if (spinnerEl) spinnerEl.remove();
+      resultEl.insertAdjacentHTML('afterbegin', evt.html);
+    }
+  };
+
   try {
     const resp = await fetch(endpoint, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(data)
     });
-    const text = await resp.text();
-    resultEl.innerHTML = text;
+
+    if (!resp.ok) {
+      resultEl.innerHTML = await resp.text();
+      return;
+    }
+
+    if (!resp.body || !resp.body.getReader) {
+      // Fallback for browsers without a streaming fetch body: parse the
+      // whole NDJSON response at once (no progressive display, but still
+      // works).
+      const text = await resp.text();
+      for (const line of text.split('\\n')) {
+        if (line.trim()) handleEvent(JSON.parse(line));
+      }
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\\n')) >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (line.trim()) handleEvent(JSON.parse(line));
+      }
+    }
+    if (buf.trim()) handleEvent(JSON.parse(buf));
   } catch (err) {
     resultEl.innerHTML = '<div class="error">Network error: ' + err + '</div>';
   }
@@ -428,6 +484,10 @@ def image_card_html(src: str, caption: str, download_name: str) -> str:
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "SSDWebUI/2.0"
+    # Chunked Transfer-Encoding (used to stream images progressively) is only
+    # valid under HTTP/1.1; the http.server default (HTTP/1.0) would make the
+    # browser treat our chunk framing (hex length + CRLF) as literal body text.
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
@@ -441,6 +501,37 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send_html(self, status: int, body_html: str):
         self._send(status, "text/html; charset=utf-8", body_html.encode("utf-8"))
+
+    # -- Chunked streaming (used by /generate/* to push each image to the
+    #    browser as soon as it is ready, instead of waiting for the whole
+    #    batch). One NDJSON object per chunk/line. --
+    def _start_stream(self, status: int):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+
+    def _send_stream_event(self, obj: dict) -> bool:
+        """Sends one NDJSON line as an HTTP chunk. Returns False (and gives
+        up silently) if the client has gone away, so a dropped connection
+        mid-batch doesn't crash the worker thread."""
+        chunk = (json.dumps(obj) + "\n").encode("utf-8")
+        try:
+            self.wfile.write(("%x\r\n" % len(chunk)).encode("ascii"))
+            self.wfile.write(chunk)
+            self.wfile.write(b"\r\n")
+            self.wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return False
+
+    def _end_stream(self):
+        try:
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
 
     # GET 
     def do_GET(self):
@@ -539,54 +630,86 @@ class Handler(BaseHTTPRequestHandler):
             payload["init_images"] = [init_image]
             payload["denoising_strength"] = as_float("denoising_strength", 0.6)
 
-        try:
-            t0 = time.time()
-            images_b64 = sd_img2img(payload) if mode == "img2img" else sd_txt2img(payload)
-            elapsed = time.time() - t0
-        except Exception as e:
-            self._send_html(502, f'<div class="error">{html.escape(str(e))}</div>')
-            return
-
         # Disk saving only happens if explicitly requested by the user
         # AND allowed at the server level (--disable-save).
         want_save = bool(data.get("save")) and CONFIG["allow_save"]
         if want_save:
             CONFIG["output_dir"].mkdir(parents=True, exist_ok=True)
 
-        cards = []
-        for i, b64 in enumerate(images_b64):
-            # Strip an optional data-url prefix
-            if "," in b64[:60]:
-                b64 = b64.split(",", 1)[1]
+        batch_size = payload.pop("batch_size", 1) or 1
+        base_seed = payload.get("seed", -1)
 
-            if want_save:
-                raw_bytes = base64.b64decode(b64)
-                ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-                fname = f"{ts}-{mode}-{i}.png"
-                (CONFIG["output_dir"] / fname).write_bytes(raw_bytes)
-                img_src = f"/files/{fname}"
-                caption = f"{html.escape(fname)} &middot; {elapsed:.1f}s &middot; saved to disk"
-                download_name = fname
-            else:
-                # Nothing is written on the server: the image only exists in
-                # this HTTP response, as a data-URL rendered by the browser.
-                img_src = f"data:image/png;base64,{b64}"
-                caption = f"image {i+1}/{len(images_b64)} &middot; {elapsed:.1f}s &middot; not saved"
-                download_name = f"sdcpp-{mode}-{i}.png"
+        # The sd.cpp API only ever returns a whole batch at once, so to be
+        # able to display each image as soon as it's ready, we ask for one
+        # image per call instead of one call for the whole batch, and stream
+        # each result to the browser as an NDJSON event as soon as it comes
+        # back. If a seed was pinned, it's bumped by 1 per image (same as a
+        # real batch would) so images still vary; -1 (random) is left as-is.
+        self._start_stream(200)
+        t0_all = time.time()
+        generated = 0
+        try:
+            for i in range(batch_size):
+                single_payload = dict(payload)
+                single_payload["batch_size"] = 1
+                if base_seed is not None and base_seed != -1:
+                    single_payload["seed"] = base_seed + i
 
-            cards.append(image_card_html(img_src, caption, download_name))
+                t0 = time.time()
+                try:
+                    images_b64 = (
+                        sd_img2img(single_payload) if mode == "img2img" else sd_txt2img(single_payload)
+                    )
+                except Exception as e:
+                    ok = self._send_stream_event({
+                        "type": "error",
+                        "html": f'<div class="error">{html.escape(str(e))}</div>',
+                    })
+                    if not ok:
+                        return
+                    break
+                elapsed = time.time() - t0
 
-        note = (
-            f'saved to {html.escape(str(CONFIG["output_dir"]))}'
-            if want_save else
-            "not saved on the server (display only)"
-        )
-        body = (
-            f'<p style="color:#8a90a0">{len(images_b64)} image(s) generated in {elapsed:.1f}s '
-            f'&mdash; {note}</p>'
-            f'<div class="gallery">{"".join(cards)}</div>'
-        )
-        self._send_html(200, body)
+                b64 = images_b64[0]
+                if "," in b64[:60]:
+                    b64 = b64.split(",", 1)[1]
+
+                if want_save:
+                    raw_bytes = base64.b64decode(b64)
+                    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+                    fname = f"{ts}-{mode}-{i}.png"
+                    (CONFIG["output_dir"] / fname).write_bytes(raw_bytes)
+                    img_src = f"/files/{fname}"
+                    caption = f"{html.escape(fname)} &middot; {elapsed:.1f}s &middot; saved to disk"
+                    download_name = fname
+                else:
+                    # Nothing is written on the server: the image only exists
+                    # in this HTTP response, as a data-URL rendered by the browser.
+                    img_src = f"data:image/png;base64,{b64}"
+                    caption = f"image {i+1}/{batch_size} &middot; {elapsed:.1f}s &middot; not saved"
+                    download_name = f"sdcpp-{mode}-{i}.png"
+
+                generated += 1
+                card = image_card_html(img_src, caption, download_name)
+                ok = self._send_stream_event({
+                    "type": "image", "index": generated, "total": batch_size, "html": card,
+                })
+                if not ok:
+                    return
+
+            total_elapsed = time.time() - t0_all
+            note = (
+                f'saved to {html.escape(str(CONFIG["output_dir"]))}'
+                if want_save else
+                "not saved on the server (display only)"
+            )
+            summary = (
+                f'<p style="color:#8a90a0">{generated}/{batch_size} image(s) generated '
+                f'in {total_elapsed:.1f}s &mdash; {note}</p>'
+            )
+            self._send_stream_event({"type": "done", "html": summary})
+        finally:
+            self._end_stream()
 
 #################
 # main programm #
