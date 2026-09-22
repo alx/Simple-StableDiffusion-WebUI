@@ -157,6 +157,9 @@ PAGE_SHELL = """<!DOCTYPE html>
   .row > div {{ flex:1; }}
   button {{ background:#4c6fff; color:white; border:none; padding:.7rem 1rem; border-radius:6px; font-size:.95rem; cursor:pointer; width:100%; margin-top:.8rem; }}
   button:hover {{ background:#3a5ae8; }}
+  .presets {{ display:flex; flex-wrap:wrap; gap:.4rem; margin:0 0 .5rem; }}
+  .presets button {{ width:auto; margin:0; padding:.45rem .8rem; border-radius:999px; font-size:.82rem; font-weight:600; }}
+  .presets button:hover {{ filter:brightness(1.2); }}
   .result {{ min-height: 200px; position: sticky; top: 1.5rem; }}
   .gallery {{ display:grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap: 1rem; }}
   .gallery img, .result img {{ width:100%; border-radius:8px 8px 0 0; border:1px solid #2a2e38; border-bottom:none; display:block; }}
@@ -494,6 +497,15 @@ def facepipeline_html(meta: dict) -> str:
 
     <fieldset>
       <legend>Prompt</legend>
+      <div class="presets">
+        <button type="button" data-prompt="cinematic cyberpunk style, neon glow, rainy night city, futuristic techwear, blade runner atmosphere, high detail digital painting" data-negative="daylight, rustic, vintage, watercolor, cartoon, pixel art" style="background:linear-gradient(135deg,#ff2df3,#05d9e8); color:#0b0b13;">&#127766; Cyberpunk</button>
+        <button type="button" data-prompt="16-bit pixel art, retro video game sprite, limited color palette, crisp dithering, 80s console aesthetic" data-negative="smooth shading, photorealistic, blur, gradients, 3d render" style="background:linear-gradient(135deg,#3ddc84,#00695c); color:#0b0b13;">&#128024; Pixel art</button>
+        <button type="button" data-prompt="anime illustration, studio ghibli style, soft cel shading, clean line art, warm pastel palette, detailed painted background" data-negative="photorealistic, 3d, heavy shading, western cartoon, pixel" style="background:linear-gradient(135deg,#ffb3c1,#ff5e94); color:#0b0b13;">&#127988; Anime</button>
+        <button type="button" data-prompt="delicate watercolor painting, soft wet-on-wet washes, translucent color layers, visible paper texture, gentle brush strokes" data-negative="neon, digital, hard edges, 3d render, high contrast" style="background:linear-gradient(135deg,#c9e4ff,#7fb3ff); color:#0b0b13;">&#127912; Watercolor</button>
+        <button type="button" data-prompt="bold comic book style, thick black outlines, halftone dots, vibrant pop art colors, ben-day dots, dynamic comic illustration" data-negative="soft focus, muted colors, photorealistic, watercolor, gradient" style="background:linear-gradient(135deg,#ffd633,#ff6d00); color:#0b0b13;">&#128165; Comic pop art</button>
+        <button type="button" data-prompt="1980s synthwave poster, neon sunset, retro-futuristic, chrome aesthetic, vaporwave color palette, vhs film grain" data-negative="modern, monochrome, watercolor, pixel art, anime" style="background:linear-gradient(135deg,#ff6ec7,#7b2dff); color:#fff;">&#127956; Synthwave 80s</button>
+      </div>
+      <p style="color:#8a90a0; font-size:.75rem; margin:0 0 .4rem;">Quick styles: click one to fill the prompts below (edit them freely). The people and their positions are kept by the photo itself.</p>
       <label>Prompt</label>
       <textarea name="prompt" required placeholder="turn it into a watercolor painting"></textarea>
       <label>Negative prompt</label>
@@ -578,6 +590,10 @@ async function loadFile(file) {{
   dropzone.textContent = file.name + ' (click to change)';
 }}
 
+document.querySelectorAll('#genform .presets button').forEach(b => b.addEventListener('click', () => {{
+  document.querySelector('#genform textarea[name="prompt"]').value = b.dataset.prompt;
+  document.querySelector('#genform textarea[name="negative_prompt"]').value = b.dataset.negative;
+}}));
 form.addEventListener('submit', (e) => {{
   e.preventDefault();
   if (!sourceDataURL) {{
