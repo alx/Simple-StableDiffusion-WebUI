@@ -536,6 +536,7 @@ def facepipeline_html(meta: dict) -> str:
         <div><label title="CodeFormer blend weight: 0 keeps the generated face as-is, 1 applies full CodeFormer restoration. 0.6-0.8 is a good middle ground.">CodeFormer weight (0&ndash;1)</label><input type="number" name="codeformer_weight" value="0.7" step="0.05" min="0" max="1"></div>
         <div><label title="Maximum number of faces processed per image (couples, families&hellip;).">Max faces</label><input type="number" name="max_faces" value="8" min="1" max="20"></div>
       </div>
+      <label style="display:flex; align-items:center; gap:.5rem; margin-top:.4rem;" title="A vision model (Qwen3-VL) analyses the source photo and mixes a one-line description of its structure &mdash; how many people, where they stand, poses &mdash; into the prompt, so people appear in the same places in the restyled image.">Describe photo structure with the vision model <input type="checkbox" name="vision_describe" value="true" checked style="width:auto;"></label>
     </fieldset>
 
     {model_note_html(meta)}
@@ -901,6 +902,7 @@ class Handler(BaseHTTPRequestHandler):
             "identity_swap": "true" if as_bool("identity_swap", True) else "false",
             "codeformer_weight": str(as_float("codeformer_weight", 0.7)),
             "max_faces": str(as_int("max_faces", 8)),
+            "vision_describe": "true" if as_bool("vision_describe", True) else "false",
         }
         if not fields["prompt"]:
             self._send_html(400, '<div class="error">Prompt is empty.</div>')
@@ -956,9 +958,17 @@ class Handler(BaseHTTPRequestHandler):
                 restore_s = meta.get("restore_s", "?")
                 faces = meta.get("faces_matched", meta.get("faces_detected", "?"))
                 saved = " &middot; saved to disk" if want_save else ""
+                vdesc = meta.get("vision_description", "")
+                vline = ""
+                if vdesc:
+                    vline = (f'<br><span style="color:#8a90a0">vision ({meta.get("vision_s", "?")}s): '
+                             f'{html.escape(vdesc)}</span>')
+                elif meta.get("vision_error"):
+                    vline = (f'<br><span style="color:#c07070">vision off: '
+                             f'{html.escape(str(meta["vision_error"]))}</span>')
                 caption = (f"image {i + 1}/{len(images)} &middot; i2i {i2i_s}s "
                            f"&middot; faces {restore_s}s &middot; {faces} face(s)"
-                           f"{saved}")
+                           f"{saved}{vline}")
                 generated += 1
                 ok = self._send_stream_event({
                     "type": "image", "index": generated, "total": len(images),
