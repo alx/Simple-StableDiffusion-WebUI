@@ -22,6 +22,7 @@ import mimetypes
 import os
 import sys
 import time
+import uuid
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -37,6 +38,10 @@ CONFIG = {
     "output_dir": Path("./outputs"),
     "timeout": 300,
     "allow_save": True,   # if False, no image can ever be written to disk
+    # face-pipeline service (i2i + InsightFace/CodeFormer face post-pass);
+    # see face-pipeline/ in the org repo.
+    "facepipeline_url": "http://127.0.0.1:8199",
+    "facepipeline_timeout": 900,
 }
 
 #################################################################
@@ -80,6 +85,24 @@ def sd_img2img(payload: dict) -> list[str]:
     if not images:
         raise RuntimeError("The server returned no image (empty response).")
     return images
+
+
+def multipart_body(fields: dict, file_name: str, file_bytes: bytes) -> tuple[bytes, dict]:
+    """Builds a minimal multipart/form-data body (stdlib only): the text
+    fields from `fields` plus one file part named 'file'."""
+    boundary = "----ssdwebui" + uuid.uuid4().hex
+    parts = []
+    for k, v in fields.items():
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n'
+            f'{v}\r\n'.encode("utf-8"))
+    parts.append(
+        (f'--{boundary}\r\n'
+         f'Content-Disposition: form-data; name="file"; filename="{file_name}"\r\n'
+         'Content-Type: image/jpeg\r\n\r\n').encode("utf-8"))
+    parts.append(file_bytes)
+    parts.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(parts), {"Content-Type": f"multipart/form-data; boundary={boundary}"}
 
 
 def sd_meta() -> dict:
@@ -159,6 +182,7 @@ PAGE_SHELL = """<!DOCTYPE html>
   <nav>
     <a href="/" class="{active_txt2img}">Text2Image</a>
     <a href="/img2img" class="{active_img2img}">Image2Image</a>
+    <a href="/facepipeline" class="{active_facepipeline}">Face Pipeline</a>
     <a href="/gallery" class="{active_gallery}">Gallery</a>
   </nav>
 </header>
@@ -176,6 +200,7 @@ def page(active: str, body: str) -> str:
         body=body,
         active_txt2img="active" if active == "txt2img" else "",
         active_img2img="active" if active == "img2img" else "",
+        active_facepipeline="active" if active == "facepipeline" else "",
         active_gallery="active" if active == "gallery" else "",
     )
 
@@ -454,6 +479,116 @@ form.addEventListener('submit', (e) => {{
 """
 
 
+def facepipeline_html(meta: dict) -> str:
+    sampler_opts = options_html(meta.get("samplers", []), "euler_a")
+    scheduler_opts = options_html(meta.get("schedulers", []))
+    return f"""
+<div>
+  <form id="genform">
+    <fieldset>
+      <legend>Source image</legend>
+      <div id="dropzone" class="dropzone">Click to choose an image, or drag &amp; drop it here</div>
+      <input type="file" id="fileInput" accept="image/*" style="display:none;">
+      <img id="preview" class="preview">
+    </fieldset>
+
+    <fieldset>
+      <legend>Prompt</legend>
+      <label>Prompt</label>
+      <textarea name="prompt" required placeholder="turn it into a watercolor painting"></textarea>
+      <label>Negative prompt</label>
+      <textarea name="negative_prompt" placeholder="blurry, low quality, text, watermark"></textarea>
+    </fieldset>
+
+    <fieldset>
+      <legend>Editing parameters</legend>
+      <label title="How much the source image is altered. 0 keeps it (almost) unchanged, 1 mostly ignores it and generates from the prompt alone. Typical range: 0.3-0.7.">Denoising strength (0 = keep original, 1 = ignore it)</label>
+      <input type="number" name="denoising_strength" value="0.6" step="0.01" min="0" max="1">
+      <div class="row">
+        <div><label title="Image width in pixels. Must be a multiple of 8. Larger values need more VRAM and time.">Width</label><input type="number" name="width" value="512" step="8" min="64"></div>
+        <div><label title="Image height in pixels. Must be a multiple of 8. Larger values need more VRAM and time.">Height</label><input type="number" name="height" value="512" step="8" min="64"></div>
+      </div>
+      <div class="row">
+        <div><label title="Number of denoising steps. More steps can improve detail but takes longer; gains flatten out past ~20-40 for most samplers.">Steps</label><input type="number" name="steps" value="20" min="1" max="150"></div>
+        <div><label title="Classifier-Free Guidance scale: how closely the image should follow the prompt.">CFG scale</label><input type="number" name="cfg_scale" value="7" step="0.1" min="0"></div>
+      </div>
+      <div class="row">
+        <div><label title="Random number generator seed. -1 picks a new random seed each time.">Seed (-1 = random)</label><input type="number" name="seed" value="-1"></div>
+        <div><label title="How many images to generate in one click, using the same source image, prompt and settings.">Number of images</label><input type="number" name="batch_size" value="1" min="1" max="16"></div>
+      </div>
+      <label title="The algorithm used to progressively turn noise into an image.">Sampler</label>
+      <select name="sampler_name">{sampler_opts or '<option value="euler_a">euler_a</option>'}</select>
+      <label title="Controls how the noise level (sigma) is spaced across steps.">Scheduler</label>
+      <select name="scheduler">{scheduler_opts or '<option value="">(server default)</option>'}</select>
+    </fieldset>
+
+    <fieldset>
+      <legend>Face pipeline (InsightFace + CodeFormer)</legend>
+      <p style="color:#8a90a0; font-size:.75rem; margin:0 0 .4rem;">
+        After the edit, faces are matched to the <b>original</b> photo: identity is
+        transferred back (InsightFace inswapper), then face detail is restored
+        (CodeFormer). Runs on the face-pipeline service; keep this page's sd-server
+        tab in mind for raw i2i only.
+      </p>
+      <label style="display:flex; align-items:center; gap:.5rem;" title="Run the face post-pass (identity transfer + CodeFormer) after the image2image step. Unchecked = plain i2i result.">Restore faces <input type="checkbox" name="restore_faces" value="true" checked style="width:auto;"></label>
+      <label style="display:flex; align-items:center; gap:.5rem; margin-top:.4rem;" title="Transfer the identity of the people in the ORIGINAL photo onto the faces of the generated image (InsightFace inswapper). This is what keeps it looking like the same person after stylization.">Identity from original photo <input type="checkbox" name="identity_swap" value="true" checked style="width:auto;"></label>
+      <div class="row" style="margin-top:.4rem;">
+        <div><label title="CodeFormer blend weight: 0 keeps the generated face as-is, 1 applies full CodeFormer restoration. 0.6-0.8 is a good middle ground.">CodeFormer weight (0&ndash;1)</label><input type="number" name="codeformer_weight" value="0.7" step="0.05" min="0" max="1"></div>
+        <div><label title="Maximum number of faces processed per image (couples, families&hellip;).">Max faces</label><input type="number" name="max_faces" value="8" min="1" max="20"></div>
+      </div>
+    </fieldset>
+
+    {model_note_html(meta)}
+    {save_field_html()}
+
+    <button type="submit">Generate + restore faces</button>
+  </form>
+</div>
+<div>
+  <div id="result" class="result">
+    <p style="color:#8a90a0">The generated image(s) will appear here.</p>
+  </div>
+</div>
+
+{SHARED_SCRIPT}
+<script>
+const form = document.getElementById('genform');
+const result = document.getElementById('result');
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const preview = document.getElementById('preview');
+let sourceDataURL = null;
+
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('dragover', (e) => {{ e.preventDefault(); dropzone.classList.add('dragover'); }});
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+dropzone.addEventListener('drop', async (e) => {{
+  e.preventDefault();
+  dropzone.classList.remove('dragover');
+  if (e.dataTransfer.files.length) await loadFile(e.dataTransfer.files[0]);
+}});
+fileInput.addEventListener('change', async () => {{
+  if (fileInput.files.length) await loadFile(fileInput.files[0]);
+}});
+async function loadFile(file) {{
+  sourceDataURL = await fileToDataURL(file);
+  preview.src = sourceDataURL;
+  preview.style.display = 'block';
+  dropzone.textContent = file.name + ' (click to change)';
+}}
+
+form.addEventListener('submit', (e) => {{
+  e.preventDefault();
+  if (!sourceDataURL) {{
+    result.innerHTML = '<div class="error">Please choose a source image first.</div>';
+    return;
+  }}
+  submitGeneration(form, result, '/generate/facepipeline', {{init_image: sourceDataURL}});
+}});
+</script>
+"""
+
+
 def gallery_html(files: list[Path]) -> str:
     if not files:
         return "<p style='color:#8a90a0'>No image has been saved yet.</p>"
@@ -543,6 +678,10 @@ class Handler(BaseHTTPRequestHandler):
             meta = sd_meta()
             self._send_html(200, page("img2img", img2img_html(meta)))
 
+        elif self.path.startswith("/facepipeline"):
+            meta = sd_meta()
+            self._send_html(200, page("facepipeline", facepipeline_html(meta)))
+
         elif self.path.startswith("/gallery"):
             if not CONFIG["allow_save"]:
                 body = "<p style='color:#8a90a0'>Disk saving is disabled on this instance (--disable-save).</p>"
@@ -574,6 +713,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_generate(mode="txt2img")
         elif self.path == "/generate/img2img":
             self._handle_generate(mode="img2img")
+        elif self.path == "/generate/facepipeline":
+            self._handle_facepipeline()
         else:
             self._send(404, "text/plain", b"Not found")
 
@@ -711,6 +852,130 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             self._end_stream()
 
+    # -- Face Pipeline (face-pipeline service: i2i + face post-pass) --------
+    def _handle_facepipeline(self):
+        data = self._read_json_body()
+        init_image = data.get("init_image", "")
+        if not init_image:
+            self._send_html(400, '<div class="error">No source image provided.</div>')
+            return
+        if "," in init_image[:60]:
+            init_image = init_image.split(",", 1)[1]
+        try:
+            img_bytes = base64.b64decode(init_image)
+        except Exception:
+            self._send_html(400, '<div class="error">Malformed source image.</div>')
+            return
+
+        def as_int(key, default):
+            try:
+                return int(data.get(key, default))
+            except (TypeError, ValueError):
+                return default
+
+        def as_float(key, default):
+            try:
+                return float(data.get(key, default))
+            except (TypeError, ValueError):
+                return default
+
+        def as_bool(key, default):
+            v = data.get(key)
+            if v is None:
+                return default
+            return str(v).lower() in ("1", "true", "on", "yes", "checked")
+
+        fields = {
+            "prompt": str(data.get("prompt", "")).strip(),
+            "negative_prompt": str(data.get("negative_prompt", "")),
+            "denoising_strength": str(as_float("denoising_strength", 0.6)),
+            "width": str(as_int("width", 512)),
+            "height": str(as_int("height", 512)),
+            "steps": str(as_int("steps", 20)),
+            "cfg_scale": str(as_float("cfg_scale", 7.0)),
+            "seed": str(as_int("seed", -1)),
+            "sampler_name": str(data.get("sampler_name", "")),
+            "scheduler": str(data.get("scheduler", "")),
+            "batch_size": str(max(1, min(as_int("batch_size", 1), 16))),
+            "restore_faces": "true" if as_bool("restore_faces", True) else "false",
+            "identity_swap": "true" if as_bool("identity_swap", True) else "false",
+            "codeformer_weight": str(as_float("codeformer_weight", 0.7)),
+            "max_faces": str(as_int("max_faces", 8)),
+        }
+        if not fields["prompt"]:
+            self._send_html(400, '<div class="error">Prompt is empty.</div>')
+            return
+
+        body, headers = multipart_body(fields, "source.jpg", img_bytes)
+        url = CONFIG["facepipeline_url"].rstrip("/") + "/process"
+        req = urllib.request.Request(
+            url, data=body, headers={**headers, "Accept": "application/json"},
+            method="POST")
+        try:
+            with urllib.request.urlopen(
+                    req, timeout=CONFIG["facepipeline_timeout"]) as resp:
+                result = json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")[:400]
+            self._send_html(502, f'<div class="error">face-pipeline HTTP {e.code}: '
+                                 f'{html.escape(detail)}</div>')
+            return
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+            self._send_html(
+                502, f'<div class="error">face-pipeline service unreachable '
+                     f'at {html.escape(CONFIG["facepipeline_url"])}: {html.escape(str(e))}</div>')
+            return
+
+        want_save = bool(data.get("save")) and CONFIG["allow_save"]
+        self._emit_facepipeline_events(result, want_save)
+
+    def _emit_facepipeline_events(self, result: dict, want_save: bool):
+        """Streams the face-pipeline response to the browser (same NDJSON
+        events as the other tabs) and saves to disk if requested."""
+        images = result.get("images") or []
+        metas = result.get("meta") or [{} for _ in images]
+        t0_all = time.time()
+        generated = 0
+        self._start_stream(200)
+        try:
+            for i, b64 in enumerate(images):
+                meta = metas[i] if i < len(metas) else {}
+                if "," in b64[:60]:
+                    b64 = b64.split(",", 1)[1]
+                if want_save:
+                    CONFIG["output_dir"].mkdir(parents=True, exist_ok=True)
+                    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+                    fname = f"{ts}-facepipeline-{i}.png"
+                    (CONFIG["output_dir"] / fname).write_bytes(base64.b64decode(b64))
+                    img_src = f"/files/{fname}"
+                    download_name = fname
+                else:
+                    img_src = f"data:image/png;base64,{b64}"
+                    download_name = f"facepipeline-{i}.png"
+                i2i_s = meta.get("i2i_s", "?")
+                restore_s = meta.get("restore_s", "?")
+                faces = meta.get("faces_matched", meta.get("faces_detected", "?"))
+                saved = " &middot; saved to disk" if want_save else ""
+                caption = (f"image {i + 1}/{len(images)} &middot; i2i {i2i_s}s "
+                           f"&middot; faces {restore_s}s &middot; {faces} face(s)"
+                           f"{saved}")
+                generated += 1
+                ok = self._send_stream_event({
+                    "type": "image", "index": generated, "total": len(images),
+                    "html": image_card_html(img_src, caption, download_name)})
+                if not ok:
+                    return
+            total_elapsed = time.time() - t0_all
+            note = (f"saved to {html.escape(str(CONFIG['output_dir']))}"
+                    if want_save else "not saved on the server (display only)")
+            self._send_stream_event({
+                "type": "done",
+                "html": (f'<p style="color:#8a90a0">{generated}/{len(images)} image(s) '
+                        f'in {total_elapsed:.1f}s &mdash; {note}</p>')})
+        finally:
+            self._end_stream()
+
+
 #################
 # main programm #
 #################
@@ -727,6 +992,9 @@ def parse_args(argv=None):
     p.add_argument("--output-dir", default="./outputs",
                    help="Folder used to save generated images (only when saving is requested)")
     p.add_argument("--timeout", type=int, default=300, help="Timeout (s) for calls to the sd.cpp server")
+    p.add_argument("--facepipeline-url", default="http://127.0.0.1:8199",
+                   help="Base URL of the face-pipeline service (i2i + InsightFace/CodeFormer "
+                        "face post-pass), used by the Face Pipeline tab")
     p.add_argument("--open-browser", action="store_true", help="Automatically open the browser on startup")
     p.add_argument("--disable-save", action="store_true",
                    help="Forbid any image from ever being written to the server's disk (checkbox hidden, "
@@ -741,6 +1009,7 @@ def main(argv=None):
     CONFIG["output_dir"] = Path(args.output_dir)
     CONFIG["timeout"] = args.timeout
     CONFIG["allow_save"] = not args.disable_save
+    CONFIG["facepipeline_url"] = args.facepipeline_url
     if CONFIG["allow_save"]:
         CONFIG["output_dir"].mkdir(parents=True, exist_ok=True)
 
